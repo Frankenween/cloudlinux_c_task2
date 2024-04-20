@@ -7,7 +7,9 @@
 #include <malloc.h>
 #include <string.h>
 
-#define W_NOREC (1 << 0)
+#define W_NOREC        (1 << 0) // Do not visit subfolders
+#define W_QUOTE_ALL    (1 << 2) // Write every file name in quotes
+#define W_QUOTE_NEEDED (1 << 3) // Write names quoted if they contain spaces
 
 struct walk_state {
     int dirfd;
@@ -16,7 +18,15 @@ struct walk_state {
 };
 
 void process_dirent(const struct dirent *entry, struct walk_state state) {
-    printf("%*s%s\n", state.depth * 4, "", entry->d_name);
+    printf("%*s", state.depth * 4, ""); // print padding
+
+    if ((state.flags & W_QUOTE_ALL) == W_QUOTE_ALL ||
+        ((state.flags & W_QUOTE_NEEDED) == W_QUOTE_NEEDED && strchr(entry->d_name, ' ') != NULL)) {
+        printf("\"%s\"", entry->d_name);
+    } else {
+        printf("%s", entry->d_name);
+    }
+    printf("\n");
 }
 
 int walk_tree(const char *name, struct walk_state state) {
@@ -73,7 +83,7 @@ int main(int argc, char* argv[]) {
     struct walk_state initial_state = {
             .dirfd = 0,
             .depth = 0,
-            .flags = 0
+            .flags = W_QUOTE_NEEDED
     };
     int result = walk_tree(cwd, initial_state);
     free(cwd);
