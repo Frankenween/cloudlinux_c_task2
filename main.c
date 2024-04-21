@@ -6,30 +6,36 @@
 #include <malloc.h>
 #include <string.h>
 
+#include "colored_text.h"
+
 static int recursive_walk = 1; // Need to visit subfolders?
 
-enum skip_policy {
+static enum {
     PRINT_ALL,        // List all files in directory
     PRINT_ALMOST_ALL, // Skip '.' and '..' files
     SKIP_HIDDEN       // Skip files and directories starting with '.'
 } skip_rule = SKIP_HIDDEN;
 
-enum quote_policy {
+static enum {
     NO_QUOTES,    // Just print names
     QUOTE_NEEDED, // Write names quoted if they contain spaces
     QUOTE_ALL     // Write every file name in quotes
 } quote_rule = QUOTE_NEEDED;
 
+static int print_types = 0; // Print entry type after its name?
+
 struct walk_state {
-    int dirfd;
-    unsigned int depth;
+    int dirfd; // Parent directory file descriptor
+    unsigned int depth; // Walk depth
 };
 
+// Check if name is equal to "." or ".."
 int is_current_dir_or_parent(const char *name) {
     return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
-// Do something with an entry in directory
+// Do something with an entry in directory.
+// Currently, this function prints name with some formatting and maybe file type
 // state represents current dfs state - directory file descriptor and depth
 void process_dirent(const struct dirent *entry, struct walk_state state) {
     if (skip_rule == SKIP_HIDDEN && entry->d_name[0] == '.') {
@@ -37,6 +43,7 @@ void process_dirent(const struct dirent *entry, struct walk_state state) {
         return;
     }
     if (skip_rule == PRINT_ALMOST_ALL && is_current_dir_or_parent(entry->d_name)) {
+        // This is a "." or ".." file, which should not be listed
         return;
     }
 
@@ -48,10 +55,42 @@ void process_dirent(const struct dirent *entry, struct walk_state state) {
     } else {
         printf("%s", entry->d_name);
     }
+    
+    if (print_types) {
+        printf("  ");
+        switch (entry->d_type) {
+            case DT_BLK:
+                cprintf(YELLOW, "dev_blk");
+                break;
+            case DT_CHR:
+                cprintf(YELLOW, "dev_chr");
+                break;
+            case DT_DIR:
+                cprintf(BLUE, "dir");
+                break;
+            case DT_FIFO:
+                cprintf(GREEN, "pipe");
+                break;
+            case DT_LNK:
+                cprintf(CYAN, "symlink");
+                break;
+            case DT_REG:
+                printf("file");
+                break;
+            case DT_SOCK:
+                cprintf(MAGENTA, "socket");
+                break;
+            default:
+                cprintf(RED, "unknown");
+        }
+    }
     printf("\n");
 }
 
+// Check if we should skip listing this directory.
+// This function does not check if it is a directory.
 int filter_child_dir(const struct dirent *entry, struct walk_state state) {
+    if (!recursive_walk) return 1;
     if (is_current_dir_or_parent(entry->d_name)) {
         // Need to ignore these directories, or it will be an infinite loop
         return 1;
@@ -86,7 +125,7 @@ int walk_tree(const char *name, struct walk_state state) {
     struct dirent *entry;
     while ((entry = readdir(current_dir)) != NULL) {
         process_dirent(entry, state);
-        if (entry->d_type == DT_DIR && recursive_walk) {
+        if (entry->d_type == DT_DIR) {
             if (filter_child_dir(entry, state)) {
                 continue;
             }
@@ -122,6 +161,8 @@ int update_flags(const char *arg) {
         skip_rule = PRINT_ALL;
     } else if (strcmp(arg, "--almost-all") == 0) {
         skip_rule = PRINT_ALMOST_ALL;
+    } else if (strcmp(arg, "--types") == 0) {
+        print_types = 1;
     } else {
         fprintf(stderr, "Unknown option '%s'\n", arg);
         return 1;
