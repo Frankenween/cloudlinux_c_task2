@@ -212,6 +212,8 @@ int main(int argc, char *argv[]) {
             entry_path = str;
             free(cwd);
         }
+    } else {
+        entry_path = getcwd(NULL, 0);
     }
 
     struct walk_state initial_state = {
@@ -221,8 +223,9 @@ int main(int argc, char *argv[]) {
 
     result = walk_tree(entry_path, initial_state);
 
-    if (ls_root != NULL && entry_path != ls_root) {
+    if (entry_path != ls_root) {
         // ls_root is a relative path, so some memory was allocated
+        // OR ls_root is cwd, so it also needs to be freed
         free((void*) entry_path);
     }
     return result;
