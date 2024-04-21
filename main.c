@@ -1,32 +1,65 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
 #include <malloc.h>
 #include <string.h>
 
-#define W_NOREC        (1 << 0) // Do not visit subfolders
-#define W_QUOTE_ALL    (1 << 2) // Write every file name in quotes
-#define W_QUOTE_NEEDED (1 << 3) // Write names quoted if they contain spaces
+static int recursive_walk = 1; // Need to visit subfolders?
+
+enum skip_policy {
+    PRINT_ALL,        // List all files in directory
+    PRINT_ALMOST_ALL, // Skip '.' and '..' files
+    SKIP_HIDDEN       // Skip files and directories starting with '.'
+} skip_rule = SKIP_HIDDEN;
+
+enum quote_policy {
+    NO_QUOTES,    // Just print names
+    QUOTE_NEEDED, // Write names quoted if they contain spaces
+    QUOTE_ALL     // Write every file name in quotes
+} quote_rule = QUOTE_NEEDED;
 
 struct walk_state {
     int dirfd;
     unsigned int depth;
-    long flags;
 };
 
+int is_current_dir_or_parent(const char *name) {
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
+// Do something with an entry in directory
+// state represents current dfs state - directory file descriptor and depth
 void process_dirent(const struct dirent *entry, struct walk_state state) {
+    if (skip_rule == SKIP_HIDDEN && entry->d_name[0] == '.') {
+        // Should not look on hidden files
+        return;
+    }
+    if (skip_rule == PRINT_ALMOST_ALL && is_current_dir_or_parent(entry->d_name)) {
+        return;
+    }
+
     printf("%*s", state.depth * 4, ""); // print padding
 
-    if ((state.flags & W_QUOTE_ALL) == W_QUOTE_ALL ||
-        ((state.flags & W_QUOTE_NEEDED) == W_QUOTE_NEEDED && strchr(entry->d_name, ' ') != NULL)) {
+    if (quote_rule == QUOTE_ALL ||
+        (quote_rule == QUOTE_NEEDED && strchr(entry->d_name, ' ') != NULL)) {
         printf("\"%s\"", entry->d_name);
     } else {
         printf("%s", entry->d_name);
     }
     printf("\n");
+}
+
+int filter_child_dir(const struct dirent *entry, struct walk_state state) {
+    if (is_current_dir_or_parent(entry->d_name)) {
+        // Need to ignore these directories, or it will be an infinite loop
+        return 1;
+    }
+    if (skip_rule == SKIP_HIDDEN && entry->d_name[0] == '.') {
+        return 1;
+    }
+    return 0;
 }
 
 int walk_tree(const char *name, struct walk_state state) {
@@ -52,18 +85,22 @@ int walk_tree(const char *name, struct walk_state state) {
     errno = 0;
     struct dirent *entry;
     while ((entry = readdir(current_dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
         process_dirent(entry, state);
-        if (entry->d_type == DT_DIR && (state.flags & W_NOREC) == 0) {
+        if (entry->d_type == DT_DIR && recursive_walk) {
+            if (filter_child_dir(entry, state)) {
+                continue;
+            }
             struct walk_state new_state = {
                     .dirfd = current_dir_fd,
                     .depth = state.depth + 1,
-                    .flags = state.flags
             };
             exit_code |= walk_tree(entry->d_name, new_state);
         }
+        errno = 0; // Maybe some errors from previous calls, need to flush them before new readdir call
+    }
+    if (errno != 0) {
+        perror("Failed to iterate over directory");
+        exit_code = 1;
     }
 
     CLOSE_DIR:
@@ -74,7 +111,31 @@ int walk_tree(const char *name, struct walk_state state) {
     return exit_code;
 }
 
-int main(int argc, char* argv[]) {
+int update_flags(const char *arg) {
+    if (strcmp(arg, "--no-req") == 0) {
+        recursive_walk = 0;
+    } else if (strcmp(arg, "--quote-all") == 0) {
+        quote_rule = QUOTE_ALL;
+    } else if (strcmp(arg, "--no-quotes") == 0) {
+        quote_rule = NO_QUOTES; // Default option is W_QUOTE_NEEDED
+    } else if (strcmp(arg, "--all") == 0) {
+        skip_rule = PRINT_ALL;
+    } else if (strcmp(arg, "--almost-all") == 0) {
+        skip_rule = PRINT_ALMOST_ALL;
+    } else {
+        fprintf(stderr, "Unknown option '%s'\n", arg);
+        return 1;
+    }
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    for (int i = 1; i < argc; i++) {
+        if (update_flags(argv[i])) {
+            // Found wrong flag, abort now
+            return 1;
+        }
+    }
     char *cwd = getcwd(NULL, 0);
     if (cwd == NULL) {
         perror("Couldn't get current working directory");
@@ -83,7 +144,6 @@ int main(int argc, char* argv[]) {
     struct walk_state initial_state = {
             .dirfd = 0,
             .depth = 0,
-            .flags = W_QUOTE_NEEDED
     };
     int result = walk_tree(cwd, initial_state);
     free(cwd);
