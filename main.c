@@ -150,19 +150,23 @@ int walk_tree(const char *name, struct walk_state state) {
     return exit_code;
 }
 
+static const char *ls_root = NULL;
+
 int update_flags(const char *arg) {
     if (strcmp(arg, "--no-req") == 0) {
         recursive_walk = 0;
     } else if (strcmp(arg, "--quote-all") == 0) {
         quote_rule = QUOTE_ALL;
     } else if (strcmp(arg, "--no-quotes") == 0) {
-        quote_rule = NO_QUOTES; // Default option is W_QUOTE_NEEDED
+        quote_rule = NO_QUOTES;
     } else if (strcmp(arg, "--all") == 0) {
         skip_rule = PRINT_ALL;
     } else if (strcmp(arg, "--almost-all") == 0) {
         skip_rule = PRINT_ALMOST_ALL;
     } else if (strcmp(arg, "--types") == 0) {
         print_types = 1;
+    } else if (strncmp(arg, "--root=", 7) == 0) {
+        ls_root = arg + 7;
     } else {
         fprintf(stderr, "Unknown option '%s'\n", arg);
         return 1;
@@ -171,22 +175,55 @@ int update_flags(const char *arg) {
 }
 
 int main(int argc, char *argv[]) {
+    int result;
     for (int i = 1; i < argc; i++) {
         if (update_flags(argv[i])) {
             // Found wrong flag, abort now
             return 1;
         }
     }
-    char *cwd = getcwd(NULL, 0);
-    if (cwd == NULL) {
-        perror("Couldn't get current working directory");
-        return 2;
+
+    const char *entry_path;
+    if (ls_root != NULL) {
+        if (ls_root[0] == '/') { // absolute path
+            entry_path = ls_root;
+        } else {
+            // Get cwd to build absolute address
+            char *cwd = getcwd(NULL, 0);
+            if (cwd == NULL) {
+                perror("Couldn't get current working directory");
+                return 2;
+            }
+
+            size_t cwd_len = strlen(cwd);
+            size_t rel_len = strlen(ls_root);
+            // Allocate space for path concatenation
+            char *str = malloc(cwd_len + rel_len + 2);
+            if (str == NULL) {
+                perror("Couldn't allocate string for full path");
+                free(cwd);
+                return 2;
+            }
+            strcpy(str, cwd);
+            str[cwd_len] = '/';
+            strcpy(str + cwd_len + 1, ls_root);
+            str[cwd_len + 1 + rel_len] = 0;
+
+            entry_path = str;
+            free(cwd);
+        }
     }
+
     struct walk_state initial_state = {
             .dirfd = 0,
             .depth = 0,
     };
-    int result = walk_tree(cwd, initial_state);
-    free(cwd);
+
+    result = walk_tree(entry_path, initial_state);
+
+    if (ls_root != NULL && entry_path != ls_root) {
+        // ls_root is a relative path, so some memory was allocated
+        free((void*) entry_path);
+    }
     return result;
 }
